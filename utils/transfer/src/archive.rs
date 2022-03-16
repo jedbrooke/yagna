@@ -1,6 +1,7 @@
 use crate::error::Error;
 use crate::TransferData;
 use actix_rt::Arbiter;
+use actix_rt::time::delay_for;
 use async_compression::stream::{BzDecoder, BzEncoder};
 use async_compression::stream::{GzipDecoder, GzipEncoder};
 use async_compression::stream::{XzDecoder, XzEncoder};
@@ -15,6 +16,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::str::FromStr;
+use std::thread::current;
 use tokio::fs::OpenOptions;
 use tokio::io::{copy, AsyncWriteExt};
 use ya_client_model::activity::TransferArgs;
@@ -571,4 +573,57 @@ impl BytesResult for Result<Bytes, io::Error> {
     {
         self.map(|b| B::from(b)).map_err(|e| E::from(e))
     }
+}
+
+#[actix_rt::test]
+
+/// If you need another thread it can be created by instantiating new Arbiter
+async fn more_arbiters_and_leak() {
+    println!("Number of threads {}", palaver::thread::count());
+
+    {
+        // Creates a new thread, keeps a JoinHandle for it
+        // From the docs:
+        // A `JoinHandle` *detaches* the associated thread when it is dropped, which
+        // means that there is no longer any handle to the thread and no way to `join`
+        // on it.
+        let new_thread = Arbiter::new();
+
+        println!("Number of threads new Arbiter {}", palaver::thread::count());
+
+        new_thread.send(Box::pin(async {
+            delay_for(std::time::Duration::from_secs_f32(1.0)).await;
+
+            println!("Fut on separate thread {:?}", current().id())
+        }));
+
+
+        // Wait on default Arbiter, that does not affect dedicated thread
+        // You will most likely see both prints, because delay_for is set for the same value
+        // and by accident new_thread will also execute, and do a print, before this test
+        // exits
+        let res = Arbiter::local_join().await;
+
+        // Stopping the event loop will cancel pending futures
+        // new_thread.stop();
+        // Before join, event loop must be stopped
+        // let res = new_thread.join();
+
+
+        // You can spawn moarrr
+        // for _ in 0..10 {
+        //     Arbiter::new().send(Box::pin(async {
+        //         delay_for(std::time::Duration::from_secs_f32(1.0)).await;
+
+        //         println!("Fut on separate thread {:?}", current().id())
+        //     }));
+        // }
+    }
+
+    // There is no handle for the arbiter, but thread is still there!
+    println!(
+        "Number of threads new Arbiter is out of scope {}",
+        palaver::thread::count()
+    );
+
 }
